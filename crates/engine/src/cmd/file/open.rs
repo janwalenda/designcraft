@@ -107,7 +107,7 @@ pub(crate) fn load_document_fonts(d: &mut Document, path: &str) -> (Option<Arc<c
     #[cfg(not(target_arch = "wasm32"))]
     {
         use designcraft_fonts::DOCUMENT_FONTS_FOLDER;
-        let Some(folder) = std::path::Path::new(path).parent().map(document_fonts_folder) else { return (None, 0, Vec::new()) };
+        let folder = document_fonts_folder(&document_dir(std::path::Path::new(path)));
         // A document's folder is the agent's to name (a recovery entry or a book lists paths too):
         // the fonts crate asks the automation roots about the folder and each font file, so fonts
         // outside the read root stay unloaded.
@@ -120,6 +120,17 @@ pub(crate) fn load_document_fonts(d: &mut Document, path: &str) -> (Option<Arc<c
     {
         let _ = (d, path);
         (None, 0, Vec::new())
+    }
+}
+
+/// The folder that holds `path`'s siblings. A bare file name (`t.idml`) has an empty
+/// [`Path::parent`]; treat that as the current directory so a case-insensitive `Document fonts`
+/// lookup can `read_dir` it (exact `Document Fonts` already worked via a relative join).
+#[cfg(not(target_arch = "wasm32"))]
+fn document_dir(path: &std::path::Path) -> std::path::PathBuf {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
     }
 }
 
@@ -284,6 +295,40 @@ mod document_fonts_tests {
         assert_eq!(r["documentFonts"], 1, "{r}");
         assert_eq!(font_entry(&mut s, FAMILY)["missing"], false);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #2014: a bare file name's parent is the empty path, so case-insensitive matching must
+    /// `read_dir(".")` (exact `Document Fonts` already resolved via a relative join).
+    #[test]
+    fn opening_by_a_bare_file_name_finds_document_fonts_whatever_their_case() {
+        const FAMILY: &str = "DocFont Bare Name Test";
+        assert_eq!(super::document_dir(Path::new("t.idml")), Path::new("."));
+        assert_eq!(super::document_dir(Path::new("./t.idml")), Path::new("."));
+
+        // `file.open` with a bare name resolves siblings relative to the process cwd; serialise
+        // cwd changes so parallel tests in this crate don't race.
+        static CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _cwd = CWD.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("dc-open-docfonts-bare-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let fonts = dir.join("Document fonts");
+        std::fs::create_dir_all(&fonts).unwrap();
+        std::fs::write(fonts.join("bare.ttf"), font_with(FAMILY, &['H']).unwrap()).unwrap();
+        write_document(&dir.join("Brochure.idml"), FAMILY);
+
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let opened = std::panic::catch_unwind(|| {
+            let mut s = Session::new();
+            let r = s.execute("file.open", &json!({"path": "Brochure.idml"})).unwrap();
+            assert_eq!(r["documentFonts"], 1, "{r}");
+            assert_eq!(font_entry(&mut s, FAMILY)["source"], "document");
+        });
+        let _ = std::env::set_current_dir(prev);
+        let _ = std::fs::remove_dir_all(&dir);
+        if let Err(e) = opened {
+            std::panic::resume_unwind(e);
+        }
     }
 
     #[test]
