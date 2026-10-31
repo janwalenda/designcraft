@@ -1,10 +1,14 @@
-#[cfg(test)]
-use super::bytes::{PREVIEW_PX, to_bytes};
 use super::bytes::{base64_decode, load_bytes};
-use super::{Arc, DocState, Document, EngineError, Result, Session, Value, bad, json, str_param};
+#[cfg(test)]
+use super::bytes::{to_bytes, PREVIEW_PX};
+use super::{bad, json, str_param, Arc, DocState, Document, EngineError, Result, Session, Value};
 
 pub(super) fn has_recent(s: &Session) -> std::result::Result<(), String> {
-    if s.prefs.recent_files.is_empty() { Err("no recent files".into()) } else { Ok(()) }
+    if s.prefs.recent_files.is_empty() {
+        Err("no recent files".into())
+    } else {
+        Ok(())
+    }
 }
 
 /// A recent file's first-page picture as straight RGBA, for the start screen.
@@ -60,6 +64,14 @@ pub(super) fn file_open_recent(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// `file.open`: the document opens and moves to the front of File › Open Recent.
 pub(super) fn file_open(s: &mut Session, p: &Value) -> Result<Value> {
+    // Recent / Open of a PDF or PDF-compatible .ai must use editable conversion, not the
+    // DesignCraft/IDML reader (which would reject the path).
+    if let Some(path) = str_param(p, "path") {
+        let ext = std::path::Path::new(path).extension().and_then(std::ffi::OsStr::to_str).unwrap_or_default().to_ascii_lowercase();
+        if ext == "pdf" || ext == "ai" {
+            return super::open_pdf::file_open_pdf(s, p);
+        }
+    }
     let r = open_path(s, p)?;
     if let Some(path) = str_param(p, "path") {
         s.prefs.note_recent_file(path);
@@ -161,8 +173,8 @@ mod document_fonts_tests {
     use std::path::{Path, PathBuf};
 
     use designcraft_fonts::testing::font_with;
-    use designcraft_fonts::{DOCUMENT_FONTS_FOLDER, FaceRef, FontDb, FontSource};
-    use serde_json::{Value, json};
+    use designcraft_fonts::{FaceRef, FontDb, FontSource, DOCUMENT_FONTS_FOLDER};
+    use serde_json::{json, Value};
 
     use crate::Session;
 
